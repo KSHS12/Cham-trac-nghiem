@@ -1,0 +1,8 @@
+{
+  "name": "Chấm Thi Trắc Nghiệm Di Động 2025",
+  "description": "Ứng dụng chấm trắc nghiệm bằng điện thoại theo mẫu phiếu kiểm tra định kì có phách BGD 2025, tự động chấm điểm, quản lý bảng điểm lớp nhiều môn và xuất file Excel.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
