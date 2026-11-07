@@ -1,5 +1,4 @@
 import { AnswerKey, ClassGradebook, ExamScanResult, StudentGradeRecord } from '../types';
-import { DEFAULT_ANSWER_KEYS } from './defaultAnswerKeys';
 import { getAcademicRank } from './gradingEngine';
 
 const STORAGE_KEYS = {
@@ -12,7 +11,7 @@ const STORAGE_KEYS = {
 export interface ActiveSession {
   className: string;
   subject: string;
-  examCode: string;
+  examCode: string; // "AUTO" hoặc mã đề cụ thể
 }
 
 // 1. Session state
@@ -26,7 +25,7 @@ export function loadActiveSession(): ActiveSession {
   return {
     className: '12A1',
     subject: 'Toán',
-    examCode: '101',
+    examCode: 'AUTO', // Mặc định tự động dò mã đề
   };
 }
 
@@ -38,22 +37,20 @@ export function saveActiveSession(session: ActiveSession) {
   }
 }
 
-// 2. Answer Keys
+// 2. Answer Keys (Không có mẫu mặc định, giáo viên tự tạo và tự nhập)
 export function loadAnswerKeys(): AnswerKey[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.ANSWER_KEYS);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         return parsed;
       }
     }
   } catch (e) {
     console.error(e);
   }
-  // Initialize with default presets
-  saveAnswerKeys(DEFAULT_ANSWER_KEYS);
-  return DEFAULT_ANSWER_KEYS;
+  return [];
 }
 
 export function saveAnswerKeys(keys: AnswerKey[]) {
@@ -78,7 +75,14 @@ export function saveSingleAnswerKey(key: AnswerKey): AnswerKey[] {
   return updated;
 }
 
-// 3. History
+export function deleteAnswerKeyById(id: string): AnswerKey[] {
+  const current = loadAnswerKeys();
+  const updated = current.filter((k) => k.id !== id);
+  saveAnswerKeys(updated);
+  return updated;
+}
+
+// 3. History (Lịch sử bài chấm thật của giáo viên, không có bài kiểm thử mẫu)
 export function loadExamHistory(): ExamScanResult[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.HISTORY);
@@ -94,13 +98,11 @@ export function loadExamHistory(): ExamScanResult[] {
 
 export function saveExamScan(scan: ExamScanResult): ExamScanResult[] {
   const current = loadExamHistory();
-  // Filter out any duplicate scan with same id
   const updated = [scan, ...current.filter((item) => item.id !== scan.id)];
   try {
     localStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(updated));
   } catch (e) {
     console.error('Storage quota exceeded, removing older thumbnails', e);
-    // Remove rawImage from older items to save space
     const pruned = updated.map((item, idx) => (idx > 5 ? { ...item, rawImage: undefined } : item));
     localStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(pruned));
   }
@@ -114,7 +116,7 @@ export function deleteExamScan(id: string): ExamScanResult[] {
   return updated;
 }
 
-// 4. Gradebooks (Syncing classes, auto-adding columns for new subjects)
+// 4. Gradebooks (Bắt đầu sạch sẽ, không có danh sách học sinh giả định)
 export function loadGradebooks(): Record<string, ClassGradebook> {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.GRADEBOOKS);
@@ -125,57 +127,8 @@ export function loadGradebooks(): Record<string, ClassGradebook> {
   } catch (e) {
     console.error(e);
   }
-
-  // Prepopulate sample class so the teacher immediately sees a fully functional database
-  const sample12A1: ClassGradebook = {
-    className: '12A1',
-    subjects: ['Toán', 'Vật lí'],
-    lastUpdated: new Date().toISOString(),
-    students: [
-      {
-        id: 's-01',
-        sbd: '12001',
-        name: 'Nguyễn Văn An',
-        className: '12A1',
-        scores: {
-          Toán: { score: 9.0, examCode: '101', scannedAt: new Date().toISOString(), scanId: 'sample-1' },
-          'Vật lí': { score: 8.5, examCode: '201', scannedAt: new Date().toISOString(), scanId: 'sample-2' },
-        },
-        gpa: 8.75,
-        academicRank: 'Giỏi',
-        updatedAt: new Date().toISOString(),
-      },
-      {
-        id: 's-02',
-        sbd: '12002',
-        name: 'Trần Thị Mai Linh',
-        className: '12A1',
-        scores: {
-          Toán: { score: 9.5, examCode: '101', scannedAt: new Date().toISOString(), scanId: 'sample-3' },
-          'Vật lí': { score: 9.25, examCode: '201', scannedAt: new Date().toISOString(), scanId: 'sample-4' },
-        },
-        gpa: 9.38,
-        academicRank: 'Xuất sắc',
-        updatedAt: new Date().toISOString(),
-      },
-      {
-        id: 's-03',
-        sbd: '12003',
-        name: 'Lê Hoàng Nam',
-        className: '12A1',
-        scores: {
-          Toán: { score: 7.75, examCode: '102', scannedAt: new Date().toISOString(), scanId: 'sample-5' },
-        },
-        gpa: 7.75,
-        academicRank: 'Khá',
-        updatedAt: new Date().toISOString(),
-      },
-    ],
-  };
-
-  const initial = { '12A1': sample12A1 };
-  saveGradebooks(initial);
-  return initial;
+  // Trả về rỗng ban đầu, học sinh được thêm tự động khi chấm bài thật
+  return {};
 }
 
 export function saveGradebooks(gradebooks: Record<string, ClassGradebook>) {
@@ -187,9 +140,10 @@ export function saveGradebooks(gradebooks: Record<string, ClassGradebook>) {
 }
 
 /**
- * Synchronize a scanned test paper into the Class Gradebook database.
- * If the subject is new for this class, automatically creates a new column for this subject.
- * If the student exists, updates their score. If not, adds them to the class roster.
+ * Tự động thêm học sinh vào bảng điểm khi chấm bài mới:
+ * - Nếu học sinh có SBD: kiểm tra SBD trong lớp để không bị trùng (cập nhật nếu cùng SBD).
+ * - Nếu học sinh không ghi SBD: để trống SBD (""), đối soát theo Họ và tên.
+ * - Tự động tạo thêm cột môn mới nếu lớp chưa có môn đó.
  */
 export function syncScanToGradebook(scan: ExamScanResult): {
   success: boolean;
@@ -215,42 +169,59 @@ export function syncScanToGradebook(scan: ExamScanResult): {
     };
   }
 
-  // Check if subject is new for this class
+  // Tự động thêm cột môn mới nếu chưa có
   let isNewSubject = false;
   if (!classBook.subjects.includes(subName)) {
     classBook.subjects.push(subName);
     isNewSubject = true;
   }
 
-  // Find student by SBD or Name
-  let student = classBook.students.find(
-    (s) => (s.sbd && s.sbd === scan.studentSBD) || (s.name.toLowerCase() === scan.studentName.toLowerCase())
-  );
+  // Tìm học sinh:
+  // 1. Nếu có SBD: tìm chính xác theo SBD trong lớp (không trùng lặp SBD)
+  // 2. Nếu không có SBD: tìm theo tên học sinh
+  let student: StudentGradeRecord | undefined;
+  const sbdClean = (scan.studentSBD || '').trim();
+  const nameClean = (scan.studentName || '').trim();
+
+  if (sbdClean) {
+    student = classBook.students.find((s) => s.sbd && s.sbd.trim() === sbdClean);
+  } else if (nameClean) {
+    student = classBook.students.find((s) => s.name.trim().toLowerCase() === nameClean.toLowerCase());
+  }
 
   let isNewStudent = false;
   if (!student) {
     isNewStudent = true;
     student = {
       id: 'stu-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
-      sbd: scan.studentSBD || '0000',
-      name: scan.studentName || 'Học sinh',
+      sbd: sbdClean, // Để trống nếu học sinh không ghi, tuyệt đối không tự bịa SBD
+      name: nameClean || 'Học sinh chưa ghi tên',
       className: clsName,
       scores: {},
       updatedAt: new Date().toISOString(),
     };
     classBook.students.push(student);
+  } else {
+    // Nếu học sinh đã có mà bài này có tên rõ ràng hơn thì cập nhật
+    if (nameClean && (!student.name || student.name === 'Học sinh chưa ghi tên')) {
+      student.name = nameClean;
+    }
+    if (sbdClean && !student.sbd) {
+      student.sbd = sbdClean;
+    }
   }
 
-  // Update subject score
+  // Cập nhật điểm cho môn học này
   student.scores[subName] = {
     score: scan.totalScore,
+    maxScore: scan.maxScore,
     examCode: scan.examCode,
     scannedAt: scan.timestamp,
     scanId: scan.id,
   };
   student.updatedAt = new Date().toISOString();
 
-  // Re-calculate GPA and rank for this student
+  // Tính lại điểm trung bình (GPA)
   const validScores = classBook.subjects
     .map((sub) => student?.scores[sub]?.score)
     .filter((s): s is number => s !== undefined && s !== null);
@@ -260,10 +231,15 @@ export function syncScanToGradebook(scan: ExamScanResult): {
     student.academicRank = getAcademicRank(student.gpa);
   }
 
-  // Sort students alphabetically by name or SBD
-  classBook.students.sort((a, b) => a.sbd.localeCompare(b.sbd, undefined, { numeric: true }));
-  classBook.lastUpdated = new Date().toISOString();
+  // Sắp xếp học sinh theo SBD hoặc Tên
+  classBook.students.sort((a, b) => {
+    if (a.sbd && b.sbd) {
+      return a.sbd.localeCompare(b.sbd, undefined, { numeric: true });
+    }
+    return a.name.localeCompare(b.name, 'vi');
+  });
 
+  classBook.lastUpdated = new Date().toISOString();
   gradebooks[clsName] = classBook;
   saveGradebooks(gradebooks);
 
@@ -273,8 +249,8 @@ export function syncScanToGradebook(scan: ExamScanResult): {
     subject: subName,
     isNewSubject,
     isNewStudent,
-    studentName: scan.studentName,
-    sbd: scan.studentSBD,
+    studentName: student.name,
+    sbd: student.sbd,
     score: scan.totalScore,
   };
 }
@@ -294,6 +270,7 @@ export function updateStudentScoreManually(
 
   stu.scores[subject] = {
     score: newScore,
+    maxScore: stu.scores[subject]?.maxScore || 10,
     examCode: stu.scores[subject]?.examCode || '101',
     scannedAt: new Date().toISOString(),
     scanId: 'manual-edit',

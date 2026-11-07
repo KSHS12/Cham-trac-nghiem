@@ -49,40 +49,33 @@ app.post('/api/scan-exam', async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
-    // Clean base64 string
-    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
-
     if (!genAI) {
-      // Fallback simulation when API key is not yet set
-      console.warn('GEMINI_API_KEY is not configured. Generating realistic simulated scan result.');
-      const simulated = generateSimulatedResult(expectedClass, expectedSubject, expectedExamCode);
-      res.json({
-        success: true,
-        data: simulated,
-        note: 'Kết quả được xử lý qua chế độ giả lập (Chưa cấu hình GEMINI_API_KEY).',
+      res.status(500).json({
+        success: false,
+        error: 'Chưa cấu hình GEMINI_API_KEY trên máy chủ. Vui lòng thêm khóa API trong mục Settings > Secrets.',
       });
       return;
     }
 
-    const systemInstruction = `Bạn là trợ lý thị giác máy tính chuyên phân tích và đọc phiếu trả lời trắc nghiệm chuẩn Bộ Giáo dục & Đào tạo Việt Nam năm 2025 (Mẫu QM 2025 - CV 1239 có phách).
-Nhiệm vụ của bạn là đọc các thông tin tô chì/bút mực trên phiếu:
-1. Header thông tin thí sinh:
-   - "Họ và tên thí sinh": Tên học sinh viết tay.
-   - "Số báo danh": Các số trong ô số báo danh (thường 4-6 chữ số).
-   - "Lớp": Tên lớp viết tay (ví dụ: 12A1, 10B2).
-   - "Mã đề thi": 4 chữ số được tô ở mục "8. Mã đề thi" hoặc viết tay (ví dụ: 101, 102, 201, 301, 1234).
-2. PHẦN I: Trắc nghiệm 4 lựa chọn (Câu 1 đến Câu 40).
-   - Có 4 cột: 1-10, 11-20, 21-30, 31-40.
-   - Mỗi câu học sinh tô một trong 4 đáp án: "A", "B", "C", "D". Nếu không tô hoặc xóa mờ thì null.
-3. PHẦN II: Trắc nghiệm Đúng/Sai (Câu 1 đến Câu 8).
-   - Mỗi câu gồm 4 ý: a, b, c, d.
-   - Học sinh tô vào cột "Đúng" hoặc "Sai". Trả về boolean: true nếu tô Đúng, false nếu tô Sai, null nếu bỏ trống.
-4. PHẦN III: Trắc nghiệm trả lời ngắn (Câu 1 đến Câu 6).
-   - Học sinh tô các cột dấu '-', dấu ',', và các chữ số 0-9 để tạo thành kết quả số (ví dụ: "12", "-3.5", "0.25", "42", "100", "5"). Trả về dạng chuỗi kết quả số đọc được, null nếu không tô.
-Hãy nhận dạng thật chính xác từng ô tô tròn màu đen/xám trên phiếu.`;
+    // Clean base64 string
+    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+
+    const systemInstruction = `Bạn là hệ thống thị giác máy tính chuyên phân tích phiếu trả lời trắc nghiệm chuẩn Bộ GD&ĐT Việt Nam năm 2025 (Mẫu QM 2025 - CV 1239 có phách).
+YÊU CẦU ĐỘC LẬP VÀ CHÍNH XÁC TUYỆT ĐỐI TỪ ẢNH CHỤP:
+1. ĐỌC THÔNG TIN THÍ SINH (TRÊN HÌNH ẢNH THẬT):
+   - "Họ và tên thí sinh": Đọc đúng chữ viết tay của học sinh ghi sau dòng "2. Họ và tên thí sinh:". Nếu học sinh không ghi hoặc để trống, trả về chuỗi rỗng "". TUYỆT ĐỐI KHÔNG TỰ BỊA TÊN.
+   - "Số báo danh": Đọc các chữ số học sinh ghi sau dòng "3. Số báo danh:". Nếu không ghi hoặc để trống, trả về chuỗi rỗng "". TUYỆT ĐỐI KHÔNG TỰ BỊA SỐ BÁO DANH.
+   - "Lớp": Đọc chữ viết tay tại dòng "4. Lớp:". Nếu không ghi, trả về chuỗi rỗng "".
+   - "MÔN THI": Đọc chữ viết tay tại dòng "MÔN THI:". Nếu không ghi, trả về chuỗi rỗng "".
+   - "Mã đề thi": TỰ ĐỘNG DÒ MÃ ĐỀ: Đọc các số viết tay trong 4 ô vuông tại "Mã đề thi" VÀ đọc các ô tròn tô đen ở mục "8. Mã đề thi" bên phải (ví dụ: "101", "102", "1101", "201", "1234"). Trả về đúng mã đề đọc được trên phiếu.
+
+2. ĐỌC ĐÁP ÁN CÁC Ô TÔ CHÌ:
+   - PHẦN I (Trắc nghiệm 4 lựa chọn, Câu 1 đến 40): Đọc ô tròn tô đen ở mỗi câu (A, B, C, D). Nếu câu nào không tô, tẩy trắng hoặc không có thì trả về null.
+   - PHẦN II (Đúng/Sai, Câu 1 đến 8, mỗi câu có 4 ý a, b, c, d): Trả về true nếu tô cột "Đúng", false nếu tô cột "Sai", null nếu không tô.
+   - PHẦN III (Điền số, Câu 1 đến 6): Đọc các cột số được tô dấu âm '-', dấu thập phân ',', và các chữ số 0-9 để tạo thành chuỗi số kết quả (ví dụ: "-3.5", "12", "0.25"). Trả về null nếu câu đó không tô.`;
 
     const promptText = `Hãy quét phiếu thi trắc nghiệm này và trích xuất dữ liệu thí sinh cùng tất cả các câu trả lời ở Phần I (1-40), Phần II (1-8 a,b,c,d), và Phần III (1-6).
-Ghi chú gợi ý từ giáo viên nếu có:
+Gợi ý tham khảo từ cài đặt giáo viên:
 - Lớp dự kiến: ${expectedClass || 'Chưa rõ'}
 - Môn dự kiến: ${expectedSubject || 'Chưa rõ'}
 - Mã đề dự kiến: ${expectedExamCode || 'Chưa rõ'}`;
@@ -109,10 +102,11 @@ Ghi chú gợi ý từ giáo viên nếu có:
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            studentName: { type: Type.STRING, description: 'Họ và tên thí sinh đọc trên phiếu' },
-            studentSBD: { type: Type.STRING, description: 'Số báo danh' },
-            className: { type: Type.STRING, description: 'Lớp' },
-            examCode: { type: Type.STRING, description: 'Mã đề thi 3 hoặc 4 chữ số' },
+            studentName: { type: Type.STRING, description: 'Họ và tên thí sinh viết tay trên phiếu, chuỗi rỗng nếu không ghi' },
+            studentSBD: { type: Type.STRING, description: 'Số báo danh viết tay trên phiếu, chuỗi rỗng nếu không ghi' },
+            className: { type: Type.STRING, description: 'Lớp viết tay trên phiếu, chuỗi rỗng nếu không ghi' },
+            subject: { type: Type.STRING, description: 'Môn thi viết tay trên phiếu, chuỗi rỗng nếu không ghi' },
+            examCode: { type: Type.STRING, description: 'Mã đề thi tự động dò từ ô mã đề thi hoặc phần 8 tô mã đề' },
             part1: {
               type: Type.OBJECT,
               description: 'Đáp án phần 1 từ câu 1 đến 40. Key là số câu dạng string, value là "A"|"B"|"C"|"D"|null',
@@ -193,15 +187,23 @@ Ghi chú gợi ý từ giáo viên nếu có:
     res.json({
       success: true,
       data: {
-        studentName: parsed.studentName || 'Thí sinh',
-        studentSBD: parsed.studentSBD || '01234',
-        className: parsed.className || expectedClass || '',
-        examCode: parsed.examCode || expectedExamCode || '101',
+        studentName: (parsed.studentName || '').trim(),
+        studentSBD: (parsed.studentSBD || '').trim(),
+        className: (parsed.className || '').trim(),
+        subject: (parsed.subject || '').trim(),
+        examCode: (parsed.examCode || '').trim() || (expectedExamCode && expectedExamCode !== 'AUTO' ? expectedExamCode : ''),
         part1: part1Num,
         part2: part2Num,
         part3: part3Num,
         confidence: parsed.confidence || 0.95,
         notes: parsed.notes || '',
+        detectedOnPaper: {
+          name: (parsed.studentName || '').trim(),
+          sbd: (parsed.studentSBD || '').trim(),
+          className: (parsed.className || '').trim(),
+          subject: (parsed.subject || '').trim(),
+          examCode: (parsed.examCode || '').trim(),
+        },
       },
     });
   } catch (error: any) {
@@ -212,56 +214,6 @@ Ghi chú gợi ý từ giáo viên nếu có:
     });
   }
 });
-
-function generateSimulatedResult(expectedClass?: string, expectedSubject?: string, expectedExamCode?: string) {
-  const sampleNames = [
-    'Nguyễn Văn An',
-    'Trần Thị Mai Linh',
-    'Lê Hoàng Nam',
-    'Phạm Đức Minh',
-    'Đỗ Quỳnh Nga',
-    'Vũ Tuấn Kiệt',
-    'Bùi Thảo My',
-    'Hoàng Gia Huy',
-  ];
-  const randName = sampleNames[Math.floor(Math.random() * sampleNames.length)];
-  const randSBD = String(Math.floor(10000 + Math.random() * 90000));
-  const options: ('A' | 'B' | 'C' | 'D')[] = ['A', 'B', 'C', 'D'];
-
-  const part1: Record<number, any> = {};
-  for (let i = 1; i <= 40; i++) {
-    // 90% chance of answering
-    part1[i] = Math.random() > 0.1 ? options[Math.floor(Math.random() * 4)] : null;
-  }
-
-  const part2: Record<number, any> = {};
-  for (let i = 1; i <= 8; i++) {
-    part2[i] = {
-      a: Math.random() > 0.05 ? Math.random() > 0.5 : null,
-      b: Math.random() > 0.05 ? Math.random() > 0.5 : null,
-      c: Math.random() > 0.05 ? Math.random() > 0.5 : null,
-      d: Math.random() > 0.05 ? Math.random() > 0.5 : null,
-    };
-  }
-
-  const sampleNumbers = ['12', '-3.5', '0.25', '42', '100', '5', '24', '4.5', '18', '250'];
-  const part3: Record<number, any> = {};
-  for (let i = 1; i <= 6; i++) {
-    part3[i] = Math.random() > 0.1 ? sampleNumbers[Math.floor(Math.random() * sampleNumbers.length)] : null;
-  }
-
-  return {
-    studentName: randName,
-    studentSBD: randSBD,
-    className: expectedClass || '12A1',
-    examCode: expectedExamCode || '101',
-    part1,
-    part2,
-    part3,
-    confidence: 0.98,
-    notes: 'Nhận diện hoàn hảo các ô tô chì',
-  };
-}
 
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {

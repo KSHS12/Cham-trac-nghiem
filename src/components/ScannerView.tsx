@@ -6,7 +6,6 @@ import {
   ZapOff,
   Upload,
   Sparkles,
-  PlayCircle,
   Flame,
   CheckCircle2,
   Gauge,
@@ -280,13 +279,12 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     e.target.value = '';
   };
 
-  // Safe Scan Handler: Handles both Backend API and Client-Side Fallback gracefully
+  // Safe Scan Handler: Calls backend AI vision service
   const processScan = async (base64Image: string) => {
     try {
-      setProcessingStatus('Đang chấm phiếu thi...');
+      setProcessingStatus('Đang gửi ảnh phiếu thi đến hệ thống AI...');
       let scanData: ScanApiResponse['data'] | null = null;
 
-      // 1. Attempt server scan
       try {
         const response = await fetch('/api/scan-exam', {
           method: 'POST',
@@ -300,24 +298,45 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         });
 
         const contentType = response.headers.get('content-type') || '';
+
         if (response.ok && contentType.includes('application/json')) {
           const resData = await response.json();
           if (resData && resData.success && resData.data) {
             scanData = resData.data;
+          } else {
+            throw new Error(resData?.error || 'AI không nhận dạng được phiếu thi.');
           }
+        } else {
+          // Xử lý lỗi trả về từ máy chủ hoặc Vercel
+          let errMsg = `Lỗi máy chủ (${response.status})`;
+          if (contentType.includes('application/json')) {
+            try {
+              const errBody = await response.json();
+              if (errBody?.error) errMsg = errBody.error;
+            } catch (_) {}
+          } else if (response.status === 404) {
+            errMsg =
+              'Không tìm thấy API /api/scan-exam trên máy chủ. Nếu triển khai trên Vercel, vui lòng kiểm tra tệp api/scan-exam.ts và khóa GEMINI_API_KEY.';
+          } else {
+            const rawText = await response.text().catch(() => '');
+            if (rawText.includes('GEMINI_API_KEY')) {
+              errMsg = 'Chưa cấu hình GEMINI_API_KEY trên môi trường chạy.';
+            }
+          }
+          throw new Error(errMsg);
         }
-      } catch (netErr) {
-        console.warn('Server endpoint error, switching to direct client analyzer:', netErr);
+      } catch (netErr: any) {
+        console.error('API call error:', netErr);
+        throw netErr;
       }
 
-      // 2. If server returned non-JSON / 404 (e.g. static hosting on Vercel), fallback seamlessly
       if (!scanData) {
-        scanData = clientScanExam(className, subject, examCode);
+        throw new Error('Không nhận được dữ liệu phân tích từ phiếu thi.');
       }
 
-      // 3. Deliver result according to mode
+      // Deliver result according to mode
       if (isRapidMode && onRapidSave) {
-        setProcessingStatus('Đang lưu vào bảng điểm...');
+        setProcessingStatus('Đang tự động lưu vào bảng điểm...');
         const saved = onRapidSave(scanData, base64Image);
         playBeepSound();
 
@@ -335,7 +354,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
           setIsProcessing(false);
         }, 400);
       } else {
-        setProcessingStatus('Mở kết quả chi tiết...');
+        setProcessingStatus('Mở kết quả chi tiết để giáo viên kiểm tra...');
         setTimeout(() => {
           setIsProcessing(false);
           onScanComplete(scanData, base64Image);
@@ -346,40 +365,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
       setIsProcessing(false);
       onError(err.message || 'Lỗi khi xử lý bài thi');
     }
-  };
-
-  // Demo Scan for testing
-  const runDemoScan = () => {
-    setIsProcessing(true);
-    setProcessingStatus('Đang nạp bài thi mẫu...');
-    setTimeout(async () => {
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = 600;
-        canvas.height = 850;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, 600, 850);
-          ctx.fillStyle = '#1e293b';
-          ctx.font = 'bold 16px sans-serif';
-          ctx.fillText('PHIẾU TRẢ LỜI TRẮC NGHIỆM QM 2025 - CV 1239', 50, 40);
-          ctx.font = '14px sans-serif';
-          ctx.fillText(`Họ và tên: Nguyễn Văn An - Lớp: ${className} - Môn: ${subject}`, 50, 70);
-          ctx.fillText(`Mã đề: ${examCode === 'AUTO' ? '101' : examCode} - SBD: 12088`, 50, 95);
-          ctx.fillStyle = '#000000';
-          ctx.fillRect(20, 20, 20, 20);
-          ctx.fillRect(560, 20, 20, 20);
-          ctx.fillRect(20, 810, 20, 20);
-          ctx.fillRect(560, 810, 20, 20);
-        }
-        const demoBase64 = canvas.toDataURL('image/jpeg', 0.8);
-        await processScan(demoBase64);
-      } catch (e: any) {
-        setIsProcessing(false);
-        onError('Không thể thực hiện chấm mẫu.');
-      }
-    }, 300);
   };
 
   return (
@@ -586,15 +571,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                 </label>
               </div>
 
-              {/* Demo test button */}
-              <button
-                type="button"
-                onClick={runDemoScan}
-                className="w-full py-2 px-3 bg-emerald-950/50 hover:bg-emerald-900/50 text-emerald-300 border border-emerald-800/50 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
-              >
-                <PlayCircle className="w-4 h-4 text-emerald-400" />
-                <span>Chấm thử bài mẫu để xem mẫu phiếu</span>
-              </button>
             </div>
           </div>
         )}
@@ -731,16 +707,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
             </button>
           )}
 
-          <button
-            onClick={runDemoScan}
-            disabled={isProcessing}
-            className="px-3 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-md shadow-emerald-600/20"
-            title="Chấm thử bài mẫu để trải nghiệm ngay"
-          >
-            <PlayCircle className="w-4 h-4" />
-            <span className="hidden sm:inline">Chấm bài mẫu</span>
-            <span className="sm:hidden">Mẫu</span>
-          </button>
         </div>
       </div>
     </div>

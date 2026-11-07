@@ -10,9 +10,10 @@ import {
   User,
   GraduationCap,
   Layers,
-  ChevronRight,
   Check,
-  Edit2
+  Edit2,
+  AlertTriangle,
+  ArrowRight
 } from 'lucide-react';
 import { AnswerKey, ExamScanResult } from '../types';
 import { evaluateExam, formatScore, getAcademicRank } from '../utils/gradingEngine';
@@ -20,6 +21,8 @@ import { evaluateExam, formatScore, getAcademicRank } from '../utils/gradingEngi
 interface ScanResultModalProps {
   initialScan: ExamScanResult;
   answerKeys: AnswerKey[];
+  teacherClass: string;
+  teacherSubject: string;
   onSaveToGradebook: (finalScan: ExamScanResult) => void;
   onClose: () => void;
 }
@@ -27,6 +30,8 @@ interface ScanResultModalProps {
 export const ScanResultModal: React.FC<ScanResultModalProps> = ({
   initialScan,
   answerKeys,
+  teacherClass,
+  teacherSubject,
   onSaveToGradebook,
   onClose,
 }) => {
@@ -36,16 +41,27 @@ export const ScanResultModal: React.FC<ScanResultModalProps> = ({
   const [tempName, setTempName] = useState(initialScan.studentName);
   const [tempSBD, setTempSBD] = useState(initialScan.studentSBD);
   const [tempClass, setTempClass] = useState(initialScan.className);
+  const [tempSubject, setTempSubject] = useState(initialScan.subject);
+
+  // Tự động tìm mã đề khớp với mã đề đọc được trên phiếu
   const [selectedKeyId, setSelectedKeyId] = useState<string>(() => {
-    const matched = answerKeys.find(
+    // 1. Tìm theo mã đề đọc được trên phiếu
+    const byCode = answerKeys.find((k) => k.examCode === initialScan.examCode);
+    if (byCode) return byCode.id;
+    // 2. Tìm theo mã đề và môn
+    const bySubAndCode = answerKeys.find(
       (k) => k.subject === initialScan.subject && k.examCode === initialScan.examCode
     );
-    return matched?.id || answerKeys[0]?.id || '';
+    if (bySubAndCode) return bySubAndCode.id;
+    return answerKeys[0]?.id || '';
   });
 
-  // Launch confetti if score >= 8.0
+  const activeKey = answerKeys.find((k) => k.id === selectedKeyId) || answerKeys[0];
+
+  // Khởi động pháo hoa nếu điểm tốt (tính theo tỉ lệ thang điểm)
   useEffect(() => {
-    if (scanData.totalScore >= 8.0) {
+    const ratio = scanData.maxScore > 0 ? scanData.totalScore / scanData.maxScore : 0;
+    if (ratio >= 0.8) {
       try {
         confetti({
           particleCount: 50,
@@ -53,39 +69,43 @@ export const ScanResultModal: React.FC<ScanResultModalProps> = ({
           origin: { y: 0.7 },
         });
       } catch (e) {
-        // Ignore if canvas-confetti is not loaded
+        // Ignore
       }
     }
   }, []);
 
-  // Re-grade when changing key or answers
+  // Chấm lại điểm khi giáo viên đổi đáp án hoặc sửa câu trả lời
   const reEvaluate = (
     newPart1 = scanData.part1,
     newPart2 = scanData.part2,
     newPart3 = scanData.part3,
-    newKeyId = selectedKeyId
+    newKeyId = selectedKeyId,
+    name = tempName,
+    sbd = tempSBD,
+    cls = tempClass,
+    sub = tempSubject
   ) => {
-    const activeKey = answerKeys.find((k) => k.id === newKeyId) || answerKeys[0];
-    if (!activeKey) return;
+    const key = answerKeys.find((k) => k.id === newKeyId) || answerKeys[0];
+    if (!key) return;
 
     const evaluated = evaluateExam(
       {
-        studentName: tempName,
-        studentSBD: tempSBD,
-        className: tempClass,
-        subject: activeKey.subject || scanData.subject,
-        examCode: activeKey.examCode || scanData.examCode,
+        studentName: name,
+        studentSBD: sbd,
+        className: cls,
+        subject: sub,
+        examCode: key.examCode || scanData.examCode,
         part1: newPart1,
         part2: newPart2,
         part3: newPart3,
         rawImage: scanData.rawImage,
         confidence: scanData.confidence,
         notes: scanData.notes,
+        detectedOnPaper: scanData.detectedOnPaper,
       },
-      activeKey
+      key
     );
 
-    // Keep same scan id
     setScanData({ ...evaluated, id: scanData.id });
   };
 
@@ -125,19 +145,41 @@ export const ScanResultModal: React.FC<ScanResultModalProps> = ({
 
   const handleSaveInfo = () => {
     setIsEditingInfo(false);
-    setScanData((prev) => ({
-      ...prev,
-      studentName: tempName.trim() || 'Học sinh',
-      studentSBD: tempSBD.trim() || '0000',
-      className: tempClass.trim() || prev.className,
-    }));
+    reEvaluate(
+      scanData.part1,
+      scanData.part2,
+      scanData.part3,
+      selectedKeyId,
+      tempName,
+      tempSBD,
+      tempClass,
+      tempSubject
+    );
   };
 
   const handleConfirmSave = () => {
     onSaveToGradebook(scanData);
   };
 
-  const rank = getAcademicRank(scanData.totalScore);
+  // Phát hiện sai khác giữa thông tin trên ảnh phiếu thi và cài đặt giáo viên
+  const detectedPaper = scanData.detectedOnPaper;
+  const isClassMismatch =
+    detectedPaper?.className &&
+    detectedPaper.className.trim() !== '' &&
+    scanData.className.toLowerCase() !== detectedPaper.className.toLowerCase();
+
+  const isSubjectMismatch =
+    detectedPaper?.subject &&
+    detectedPaper.subject.trim() !== '' &&
+    scanData.subject.toLowerCase() !== detectedPaper.subject.toLowerCase();
+
+  const isExamCodeMismatch =
+    detectedPaper?.examCode &&
+    detectedPaper.examCode.trim() !== '' &&
+    scanData.examCode.trim() !== '' &&
+    scanData.examCode.trim() !== detectedPaper.examCode.trim();
+
+  const rank = getAcademicRank(scanData.totalScore, scanData.maxScore);
   const rankColors = {
     'Xuất sắc': 'from-amber-500 to-yellow-400 text-amber-950',
     'Giỏi': 'from-emerald-500 to-teal-400 text-emerald-950',
@@ -146,32 +188,36 @@ export const ScanResultModal: React.FC<ScanResultModalProps> = ({
     'Yếu': 'from-rose-600 to-red-400 text-rose-950',
   }[rank];
 
+  const p1Limit = activeKey?.part1Count ?? 40;
+  const p2Limit = activeKey?.part2Count ?? 8;
+  const p3Limit = activeKey?.part3Count ?? 6;
+
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex flex-col justify-end sm:justify-center items-center p-0 sm:p-4 overflow-y-auto">
       <div className="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
-        {/* Header with Score Banner */}
+        {/* Banner điểm & Thông tin thí sinh */}
         <div className="bg-gradient-to-br from-slate-800 via-slate-900 to-slate-950 p-5 border-b border-slate-800">
           <div className="flex items-start justify-between gap-4">
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                  KẾT QUẢ CHẤM TỰ ĐỘNG
+                  KẾT QUẢ ĐỌC TRÊN PHIẾU
                 </span>
                 <span className="text-xs text-slate-400">
                   {new Date(scanData.timestamp).toLocaleTimeString('vi-VN')}
                 </span>
               </div>
 
-              {/* Student Identity Display */}
+              {/* Tên học sinh (Đọc thật trên phiếu) */}
               {!isEditingInfo ? (
                 <div className="mt-2 flex items-center gap-2">
                   <h2 className="text-xl font-bold text-white tracking-tight">
-                    {scanData.studentName}
+                    {scanData.studentName || <span className="text-slate-500 italic">Chưa ghi họ tên</span>}
                   </h2>
                   <button
                     onClick={() => setIsEditingInfo(true)}
                     className="p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-                    title="Chỉnh sửa thông tin thí sinh"
+                    title="Chỉnh sửa thông tin nếu bài ghi mờ"
                   >
                     <Edit2 className="w-4 h-4" />
                   </button>
@@ -182,15 +228,15 @@ export const ScanResultModal: React.FC<ScanResultModalProps> = ({
                     type="text"
                     value={tempName}
                     onChange={(e) => setTempName(e.target.value)}
-                    placeholder="Họ và tên"
+                    placeholder="Họ và tên thí sinh"
                     className="px-2 py-1 bg-slate-950 border border-blue-500 rounded-md text-white text-sm font-semibold focus:outline-none"
                   />
                   <input
                     type="text"
                     value={tempSBD}
                     onChange={(e) => setTempSBD(e.target.value)}
-                    placeholder="SBD"
-                    className="w-24 px-2 py-1 bg-slate-950 border border-blue-500 rounded-md text-white text-sm font-semibold focus:outline-none"
+                    placeholder="SBD (để trống nếu HS không ghi)"
+                    className="w-28 px-2 py-1 bg-slate-950 border border-blue-500 rounded-md text-white text-sm font-semibold focus:outline-none"
                   />
                   <input
                     type="text"
@@ -199,35 +245,52 @@ export const ScanResultModal: React.FC<ScanResultModalProps> = ({
                     placeholder="Lớp"
                     className="w-20 px-2 py-1 bg-slate-950 border border-blue-500 rounded-md text-white text-sm font-semibold focus:outline-none"
                   />
+                  <input
+                    type="text"
+                    value={tempSubject}
+                    onChange={(e) => setTempSubject(e.target.value)}
+                    placeholder="Môn thi"
+                    className="w-24 px-2 py-1 bg-slate-950 border border-blue-500 rounded-md text-white text-sm font-semibold focus:outline-none"
+                  />
                   <button
                     onClick={handleSaveInfo}
                     className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-md text-xs font-semibold flex items-center gap-1"
                   >
-                    <Check className="w-3.5 h-3.5" /> Lưu
+                    <Check className="w-3.5 h-3.5" /> Lưu sửa
                   </button>
                 </div>
               )}
 
+              {/* Thông tin SBD, Lớp, Môn thi đọc được trên giấy */}
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-400">
                 <span className="flex items-center gap-1 font-mono bg-slate-800/80 px-2 py-0.5 rounded text-slate-300">
-                  <User className="w-3 h-3 text-blue-400" /> SBD: {scanData.studentSBD}
+                  <User className="w-3 h-3 text-blue-400" />
+                  SBD: {scanData.studentSBD ? <strong className="text-white">{scanData.studentSBD}</strong> : <span className="text-amber-400 italic">Không ghi SBD</span>}
                 </span>
+
                 <span className="flex items-center gap-1 font-semibold bg-slate-800/80 px-2 py-0.5 rounded text-slate-300">
-                  <GraduationCap className="w-3 h-3 text-emerald-400" /> Lớp: {scanData.className}
+                  <GraduationCap className="w-3 h-3 text-emerald-400" />
+                  Lớp: {scanData.className || <span className="text-slate-500">Chưa rõ</span>}
                 </span>
+
                 <span className="flex items-center gap-1 bg-slate-800/80 px-2 py-0.5 rounded text-slate-300">
-                  <Layers className="w-3 h-3 text-indigo-400" /> Môn: {scanData.subject}
+                  <Layers className="w-3 h-3 text-indigo-400" />
+                  Môn: {scanData.subject}
+                </span>
+
+                <span className="flex items-center gap-1 bg-purple-950/60 border border-purple-800/50 px-2 py-0.5 rounded text-purple-200 font-mono">
+                  Mã đề: <strong>{scanData.examCode}</strong>
                 </span>
               </div>
             </div>
 
-            {/* Big Score Card */}
+            {/* Khung điểm số */}
             <div className="flex flex-col items-end">
               <div className="flex items-baseline gap-1">
-                <span className="text-4xl font-extrabold tracking-tight text-white drop-shadow-sm">
+                <span className="text-4xl font-extrabold tracking-tight text-white drop-shadow-sm font-mono">
                   {formatScore(scanData.totalScore)}
                 </span>
-                <span className="text-sm font-semibold text-slate-400">/ 10</span>
+                <span className="text-sm font-semibold text-slate-400">/ {scanData.maxScore}</span>
               </div>
               <span className={`mt-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-gradient-to-r shadow-sm ${rankColors}`}>
                 {rank}
@@ -235,79 +298,146 @@ export const ScanResultModal: React.FC<ScanResultModalProps> = ({
             </div>
           </div>
 
-          {/* Exam Key Switcher Bar */}
-          <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2">
+          {/* Cảnh báo nếu có sai khác thông tin trên giấy so với cài đặt của giáo viên */}
+          {(isClassMismatch || isSubjectMismatch || isExamCodeMismatch) && (
+            <div className="mt-3 p-3 bg-amber-950/60 border border-amber-500/60 rounded-xl text-xs text-amber-200 space-y-1.5">
+              <div className="flex items-center gap-1.5 font-bold text-amber-300">
+                <AlertTriangle className="w-4 h-4 text-amber-400" />
+                <span>Phát hiện sai khác thông tin trên phiếu:</span>
+              </div>
+
+              {isClassMismatch && (
+                <div className="flex items-center justify-between gap-2">
+                  <span>Trên phiếu ghi lớp: <strong>{detectedPaper?.className}</strong> (Đang chọn: {scanData.className})</span>
+                  <button
+                    onClick={() => {
+                      const newCls = detectedPaper?.className || scanData.className;
+                      setTempClass(newCls);
+                      reEvaluate(scanData.part1, scanData.part2, scanData.part3, selectedKeyId, tempName, tempSBD, newCls, tempSubject);
+                    }}
+                    className="px-2 py-0.5 bg-amber-600 hover:bg-amber-500 text-white rounded font-semibold shrink-0"
+                  >
+                    Dùng lớp {detectedPaper?.className}
+                  </button>
+                </div>
+              )}
+
+              {isSubjectMismatch && (
+                <div className="flex items-center justify-between gap-2">
+                  <span>Trên phiếu ghi môn: <strong>{detectedPaper?.subject}</strong> (Đang chọn: {scanData.subject})</span>
+                  <button
+                    onClick={() => {
+                      const newSub = detectedPaper?.subject || scanData.subject;
+                      setTempSubject(newSub);
+                      reEvaluate(scanData.part1, scanData.part2, scanData.part3, selectedKeyId, tempName, tempSBD, tempClass, newSub);
+                    }}
+                    className="px-2 py-0.5 bg-amber-600 hover:bg-amber-500 text-white rounded font-semibold shrink-0"
+                  >
+                    Dùng môn {detectedPaper?.subject}
+                  </button>
+                </div>
+              )}
+
+              {isExamCodeMismatch && (
+                <div className="flex items-center justify-between gap-2">
+                  <span>Mã đề trên phiếu: <strong>{detectedPaper?.examCode}</strong> (Đang chấm theo mã: {scanData.examCode})</span>
+                  {answerKeys.some((k) => k.examCode === detectedPaper?.examCode) && (
+                    <button
+                      onClick={() => {
+                        const matchingKey = answerKeys.find((k) => k.examCode === detectedPaper?.examCode);
+                        if (matchingKey) handleKeyChange(matchingKey.id);
+                      }}
+                      className="px-2 py-0.5 bg-amber-600 hover:bg-amber-500 text-white rounded font-semibold shrink-0"
+                    >
+                      Dùng mã {detectedPaper?.examCode}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Dò mã đề & Chọn đáp án đối chiếu */}
+          <div className="mt-3 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-slate-400">Đáp án chấm:</span>
-              <select
-                value={selectedKeyId}
-                onChange={(e) => handleKeyChange(e.target.value)}
-                className="px-2.5 py-1 bg-slate-950 border border-slate-700 rounded-lg text-slate-200 text-xs font-medium focus:outline-none focus:border-blue-500"
-              >
-                {answerKeys.map((k) => (
-                  <option key={k.id} value={k.id}>
-                    {k.title} (Mã đề {k.examCode})
-                  </option>
-                ))}
-              </select>
+              {answerKeys.length === 0 ? (
+                <span className="text-rose-400 font-semibold">Chưa có mã đề nào trong hệ thống!</span>
+              ) : (
+                <select
+                  value={selectedKeyId}
+                  onChange={(e) => handleKeyChange(e.target.value)}
+                  className="px-2.5 py-1 bg-slate-950 border border-slate-700 rounded-lg text-slate-200 text-xs font-medium focus:outline-none focus:border-blue-500"
+                >
+                  {answerKeys.map((k) => (
+                    <option key={k.id} value={k.id}>
+                      {k.title} (Mã đề {k.examCode} - {k.part1Count ?? 40} câu P1)
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div className="flex items-center gap-3 text-slate-300 font-mono text-xs">
               <span className="text-blue-400">P.I: {formatScore(scanData.part1Score)}đ</span>
-              <span className="text-emerald-400">P.II: {formatScore(scanData.part2Score)}đ</span>
-              <span className="text-purple-400">P.III: {formatScore(scanData.part3Score)}đ</span>
+              {p2Limit > 0 && <span className="text-emerald-400">P.II: {formatScore(scanData.part2Score)}đ</span>}
+              {p3Limit > 0 && <span className="text-purple-400">P.III: {formatScore(scanData.part3Score)}đ</span>}
             </div>
           </div>
         </div>
 
-        {/* Section Navigation Tabs */}
-        <div className="flex border-b border-slate-800 bg-slate-950/60 px-4 pt-2 gap-2 text-xs font-semibold">
+        {/* Tab chuyển đổi các phần thi */}
+        <div className="flex border-b border-slate-800 bg-slate-950/60 px-4 pt-2 gap-2 text-xs font-semibold overflow-x-auto">
           <button
             onClick={() => setSelectedTab('p1')}
-            className={`pb-2.5 px-3 border-b-2 transition-colors flex items-center gap-1.5 ${
+            className={`pb-2.5 px-3 border-b-2 transition-colors flex items-center gap-1.5 shrink-0 ${
               selectedTab === 'p1'
                 ? 'border-blue-500 text-blue-400'
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             }`}
           >
-            <span>Phần I: 40 câu 4 Lựa chọn</span>
+            <span>Phần I ({p1Limit} câu)</span>
             <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-[10px]">
               {formatScore(scanData.part1Score)}đ
             </span>
           </button>
 
-          <button
-            onClick={() => setSelectedTab('p2')}
-            className={`pb-2.5 px-3 border-b-2 transition-colors flex items-center gap-1.5 ${
-              selectedTab === 'p2'
-                ? 'border-emerald-500 text-emerald-400'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <span>Phần II: Đúng / Sai</span>
-            <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-[10px]">
-              {formatScore(scanData.part2Score)}đ
-            </span>
-          </button>
+          {p2Limit > 0 && (
+            <button
+              onClick={() => setSelectedTab('p2')}
+              className={`pb-2.5 px-3 border-b-2 transition-colors flex items-center gap-1.5 shrink-0 ${
+                selectedTab === 'p2'
+                  ? 'border-emerald-500 text-emerald-400'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <span>Phần II ({p2Limit} câu Đúng/Sai)</span>
+              <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-[10px]">
+                {formatScore(scanData.part2Score)}đ
+              </span>
+            </button>
+          )}
 
-          <button
-            onClick={() => setSelectedTab('p3')}
-            className={`pb-2.5 px-3 border-b-2 transition-colors flex items-center gap-1.5 ${
-              selectedTab === 'p3'
-                ? 'border-purple-500 text-purple-400'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <span>Phần III: Trả lời ngắn</span>
-            <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-[10px]">
-              {formatScore(scanData.part3Score)}đ
-            </span>
-          </button>
+          {p3Limit > 0 && (
+            <button
+              onClick={() => setSelectedTab('p3')}
+              className={`pb-2.5 px-3 border-b-2 transition-colors flex items-center gap-1.5 shrink-0 ${
+                selectedTab === 'p3'
+                  ? 'border-purple-500 text-purple-400'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <span>Phần III ({p3Limit} câu số)</span>
+              <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-[10px]">
+                {formatScore(scanData.part3Score)}đ
+              </span>
+            </button>
+          )}
         </div>
 
-        {/* Tab Body */}
+        {/* Nội dung danh sách câu hỏi */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {/* TAB 1: PHAN I */}
+          {/* TAB 1: PHẦN I */}
           {selectedTab === 'p1' && (
             <div className="space-y-3">
               <div className="flex items-center justify-between text-xs text-slate-400 px-1">
@@ -325,85 +455,73 @@ export const ScanResultModal: React.FC<ScanResultModalProps> = ({
                 </div>
               </div>
 
-              {/* 40 Questions Grid in 4 columns (10 questions each, matching the paper) */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
-                {[
-                  { start: 1, end: 10, label: 'Cột 1 (Câu 1-10)' },
-                  { start: 11, end: 20, label: 'Cột 2 (Câu 11-20)' },
-                  { start: 21, end: 30, label: 'Cột 3 (Câu 21-30)' },
-                  { start: 31, end: 40, label: 'Cột 4 (Câu 31-40)' },
-                ].map((col) => (
-                  <div key={col.label} className="bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80">
-                    <div className="text-[11px] font-semibold text-slate-400 pb-1.5 border-b border-slate-800 mb-2">
-                      {col.label}
+              {/* Lưới câu hỏi Phần 1 (chỉ hiện đúng số lượng câu hỏi p1Limit của đề) */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                {Array.from({ length: p1Limit }, (_, i) => i + 1).map((qNum) => {
+                  const detail = scanData.part1Details[qNum];
+                  const studentAns = scanData.part1[qNum];
+                  const keyAns = detail?.key;
+
+                  return (
+                    <div
+                      key={qNum}
+                      className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors ${
+                        detail?.isCorrect
+                          ? 'bg-emerald-950/40 border border-emerald-900/60'
+                          : studentAns
+                          ? 'bg-rose-950/40 border border-rose-900/60'
+                          : 'bg-slate-900/50 border border-slate-800/60'
+                      }`}
+                    >
+                      <div className="flex items-center gap-1">
+                        <span className="font-mono font-bold text-slate-300 w-6">
+                          {qNum}.
+                        </span>
+                        {keyAns && (
+                          <span className="text-[10px] text-slate-500 font-mono">
+                            [{keyAns}]
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        {(['A', 'B', 'C', 'D'] as const).map((opt) => {
+                          const isSelected = studentAns === opt;
+                          const isTheKey = keyAns === opt;
+
+                          let optClass = 'bg-slate-800 text-slate-400 hover:bg-slate-700';
+                          if (isSelected && isTheKey) {
+                            optClass = 'bg-emerald-600 text-white font-bold ring-1 ring-emerald-400';
+                          } else if (isSelected && !isTheKey) {
+                            optClass = 'bg-rose-600 text-white font-bold';
+                          } else if (!isSelected && isTheKey) {
+                            optClass = 'bg-emerald-950/80 text-emerald-300 border border-dashed border-emerald-500/80';
+                          }
+
+                          return (
+                            <button
+                              key={opt}
+                              onClick={() => handlePart1Change(qNum, opt)}
+                              className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] transition-transform active:scale-90 ${optClass}`}
+                              title={`Câu ${qNum}: Chọn ${opt}`}
+                            >
+                              {opt}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <div className="space-y-1.5">
-                      {Array.from({ length: col.end - col.start + 1 }, (_, i) => col.start + i).map((qNum) => {
-                        const detail = scanData.part1Details[qNum];
-                        const studentAns = scanData.part1[qNum];
-                        const keyAns = detail?.key;
-
-                        return (
-                          <div
-                            key={qNum}
-                            className={`flex items-center justify-between px-2 py-1 rounded-lg text-xs transition-colors ${
-                              detail?.isCorrect
-                                ? 'bg-emerald-950/30 border border-emerald-900/50'
-                                : studentAns
-                                ? 'bg-rose-950/30 border border-rose-900/50'
-                                : 'bg-slate-900/50 border border-slate-800/50'
-                            }`}
-                          >
-                            <span className="font-mono font-medium text-slate-300 w-6">
-                              {qNum}.
-                            </span>
-
-                            {/* A, B, C, D choices */}
-                            <div className="flex items-center gap-1">
-                              {(['A', 'B', 'C', 'D'] as const).map((opt) => {
-                                const isSelected = studentAns === opt;
-                                const isTheKey = keyAns === opt;
-
-                                let optClass = 'bg-slate-800 text-slate-400 hover:bg-slate-700';
-                                if (isSelected && isTheKey) {
-                                  optClass = 'bg-emerald-600 text-white font-bold ring-1 ring-emerald-400';
-                                } else if (isSelected && !isTheKey) {
-                                  optClass = 'bg-rose-600 text-white font-bold';
-                                } else if (!isSelected && isTheKey) {
-                                  optClass = 'bg-emerald-950/80 text-emerald-300 border border-dashed border-emerald-500/80';
-                                }
-
-                                return (
-                                  <button
-                                    key={opt}
-                                    onClick={() => handlePart1Change(qNum, opt)}
-                                    className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] transition-transform active:scale-90 ${optClass}`}
-                                    title={`Câu ${qNum}: Chọn ${opt}`}
-                                  >
-                                    {opt}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
 
-          {/* TAB 2: PHAN II (Dung/Sai) */}
-          {selectedTab === 'p2' && (
+          {/* TAB 2: PHẦN II (Đúng/Sai) */}
+          {selectedTab === 'p2' && p2Limit > 0 && (
             <div className="space-y-3">
-              <div className="p-3 bg-emerald-950/30 border border-emerald-900/50 rounded-xl text-xs text-emerald-200 flex items-center justify-between">
-                <span>Quy chế BGD 2025: Đúng 1 ý: 0.1đ • Đúng 2 ý: 0.25đ • Đúng 3 ý: 0.5đ • Đúng 4 ý: 1.0đ</span>
-              </div>
-
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {Array.from({ length: 8 }, (_, i) => i + 1).map((qNum) => {
+                {Array.from({ length: p2Limit }, (_, i) => i + 1).map((qNum) => {
                   const detail = scanData.part2Details[qNum];
                   const studentQ = scanData.part2[qNum] || { a: null, b: null, c: null, d: null };
 
@@ -424,7 +542,6 @@ export const ScanResultModal: React.FC<ScanResultModalProps> = ({
                         </div>
                       </div>
 
-                      {/* 4 sub-questions: a, b, c, d */}
                       <div className="mt-2.5 space-y-2">
                         {(['a', 'b', 'c', 'd'] as const).map((letter) => {
                           const itemDetail = detail?.items[letter];
@@ -482,15 +599,11 @@ export const ScanResultModal: React.FC<ScanResultModalProps> = ({
             </div>
           )}
 
-          {/* TAB 3: PHAN III (Tra loi ngan) */}
-          {selectedTab === 'p3' && (
+          {/* TAB 3: PHẦN III (Điền số) */}
+          {selectedTab === 'p3' && p3Limit > 0 && (
             <div className="space-y-3">
-              <div className="p-3 bg-purple-950/30 border border-purple-900/50 rounded-xl text-xs text-purple-200">
-                <span>Dạng điền số (Tối đa 6 câu, mỗi câu gồm 4 cột số, dấu '-' và dấu ',')</span>
-              </div>
-
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {Array.from({ length: 6 }, (_, i) => i + 1).map((qNum) => {
+                {Array.from({ length: p3Limit }, (_, i) => i + 1).map((qNum) => {
                   const detail = scanData.part3Details[qNum];
                   const studentAns = scanData.part3[qNum] || '';
                   const keyAns = detail?.key || '-';
@@ -510,7 +623,7 @@ export const ScanResultModal: React.FC<ScanResultModalProps> = ({
                         <span className="font-bold text-sm text-white">Câu {qNum}</span>
                         <div className="flex items-center gap-1.5">
                           <span className="text-xs text-slate-400">
-                            Đáp án chuẩn: <strong className="font-mono text-emerald-400">{keyAns}</strong>
+                            Đáp án: <strong className="font-mono text-emerald-400">{keyAns}</strong>
                           </span>
                           {detail?.isCorrect ? (
                             <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -538,7 +651,7 @@ export const ScanResultModal: React.FC<ScanResultModalProps> = ({
           )}
         </div>
 
-        {/* Modal Action Bar */}
+        {/* Thanh tác vụ phía dưới modal */}
         <div className="bg-slate-950 p-4 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3">
           <button
             onClick={onClose}
@@ -548,15 +661,13 @@ export const ScanResultModal: React.FC<ScanResultModalProps> = ({
             <span>Chụp lại</span>
           </button>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleConfirmSave}
-              className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-emerald-600/30 transition-all transform active:scale-95"
-            >
-              <Save className="w-4 h-4" />
-              <span>Lưu vào Bảng điểm Lớp {scanData.className}</span>
-            </button>
-          </div>
+          <button
+            onClick={handleConfirmSave}
+            className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-lg shadow-emerald-600/30 transition-all transform active:scale-95"
+          >
+            <Save className="w-4 h-4" />
+            <span>Lưu bài vào Bảng điểm Lớp {scanData.className}</span>
+          </button>
         </div>
       </div>
     </div>

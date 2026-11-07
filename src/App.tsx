@@ -76,16 +76,30 @@ export default function App() {
   const handleScanComplete = (extractedData: ScanApiResponse['data'], rawImage: string) => {
     if (!extractedData) return;
 
-    // Determine which answer key to evaluate with
+    // Tự động dò mã đề từ bài làm của học sinh
+    const paperCode = (extractedData.examCode || '').trim();
     const targetCode =
-      session.examCode === 'AUTO' ? extractedData.examCode || '101' : session.examCode;
+      session.examCode === 'AUTO'
+        ? (paperCode || (answerKeys[0]?.examCode ?? ''))
+        : session.examCode;
 
-    // Find key matching subject and examCode, or fallback
+    // Tìm đáp án khớp với mã đề (ưu tiên môn đang chọn)
     let matchedKey = answerKeys.find(
-      (k) => k.subject === session.subject && k.examCode === targetCode
+      (k) => (k.subject === session.subject || !k.subject) && k.examCode === targetCode
     );
+    if (!matchedKey && paperCode) {
+      matchedKey = answerKeys.find((k) => k.examCode === paperCode);
+    }
     if (!matchedKey) {
-      matchedKey = answerKeys.find((k) => k.examCode === targetCode) || answerKeys[0];
+      matchedKey = answerKeys.find((k) => k.subject === session.subject) || answerKeys[0];
+    }
+
+    if (!matchedKey && answerKeys.length === 0) {
+      addToast(
+        'info',
+        'Chưa có đáp án mẫu nào',
+        `Phiếu thi có mã đề "${paperCode || targetCode}". Hãy vào mục "Đáp án" để tạo đáp án và thang điểm cho mã đề này.`
+      );
     }
 
     const evaluated = evaluateExam(
@@ -94,13 +108,20 @@ export default function App() {
         studentSBD: extractedData.studentSBD,
         className: extractedData.className || session.className,
         subject: session.subject,
-        examCode: targetCode,
+        examCode: targetCode || paperCode,
         part1: extractedData.part1,
         part2: extractedData.part2,
         part3: extractedData.part3,
         rawImage,
         confidence: extractedData.confidence,
         notes: extractedData.rawOcrNotes,
+        detectedOnPaper: extractedData.detectedOnPaper || {
+          name: extractedData.studentName,
+          sbd: extractedData.studentSBD,
+          className: extractedData.className,
+          subject: extractedData.subject,
+          examCode: extractedData.examCode,
+        },
       },
       matchedKey
     );
@@ -132,7 +153,7 @@ export default function App() {
     addToast(
       'success',
       'ĐÃ LƯU BÀI CHẤM THÀNH CÔNG!',
-      `Học sinh: ${finalScan.studentName} (SBD: ${finalScan.studentSBD}) • Điểm: ${finalScan.totalScore}/10`,
+      `Học sinh: ${finalScan.studentName}${finalScan.studentSBD ? ` (SBD: ${finalScan.studentSBD})` : ''} • Điểm: ${finalScan.totalScore}/${finalScan.maxScore}đ`,
       `Lớp ${finalScan.className} • Môn ${finalScan.subject} • ${subNotice}`
     );
   };
@@ -141,14 +162,20 @@ export default function App() {
   const handleRapidSave = (extractedData: ScanApiResponse['data'], rawImage: string): ExamScanResult | null => {
     if (!extractedData) return null;
 
+    const paperCode = (extractedData.examCode || '').trim();
     const targetCode =
-      session.examCode === 'AUTO' ? extractedData.examCode || '101' : session.examCode;
+      session.examCode === 'AUTO'
+        ? (paperCode || (answerKeys[0]?.examCode ?? ''))
+        : session.examCode;
 
     let matchedKey = answerKeys.find(
-      (k) => k.subject === session.subject && k.examCode === targetCode
+      (k) => (k.subject === session.subject || !k.subject) && k.examCode === targetCode
     );
+    if (!matchedKey && paperCode) {
+      matchedKey = answerKeys.find((k) => k.examCode === paperCode);
+    }
     if (!matchedKey) {
-      matchedKey = answerKeys.find((k) => k.examCode === targetCode) || answerKeys[0];
+      matchedKey = answerKeys.find((k) => k.subject === session.subject) || answerKeys[0];
     }
 
     const evaluated = evaluateExam(
@@ -157,13 +184,20 @@ export default function App() {
         studentSBD: extractedData.studentSBD,
         className: extractedData.className || session.className,
         subject: session.subject,
-        examCode: targetCode,
+        examCode: targetCode || paperCode,
         part1: extractedData.part1,
         part2: extractedData.part2,
         part3: extractedData.part3,
         rawImage,
         confidence: extractedData.confidence,
         notes: extractedData.rawOcrNotes,
+        detectedOnPaper: extractedData.detectedOnPaper || {
+          name: extractedData.studentName,
+          sbd: extractedData.studentSBD,
+          className: extractedData.className,
+          subject: extractedData.subject,
+          examCode: extractedData.examCode,
+        },
       },
       matchedKey
     );
@@ -180,8 +214,8 @@ export default function App() {
 
     addToast(
       'success',
-      `⚡ ĐÃ CHẤM XONG: ${evaluated.studentName} (${evaluated.totalScore}đ)`,
-      `SBD: ${evaluated.studentSBD} • Lớp ${evaluated.className} • Môn ${evaluated.subject} ${subNotice}`
+      `⚡ ĐÃ CHẤM XONG: ${evaluated.studentName} (${evaluated.totalScore}/${evaluated.maxScore}đ)`,
+      `${evaluated.studentSBD ? `SBD: ${evaluated.studentSBD} • ` : ''}Lớp ${evaluated.className} • Môn ${evaluated.subject} ${subNotice}`
     );
 
     return evaluated;
@@ -350,6 +384,8 @@ export default function App() {
         <ScanResultModal
           initialScan={currentScanResult}
           answerKeys={answerKeys}
+          teacherClass={session.className}
+          teacherSubject={session.subject}
           onSaveToGradebook={handleSaveToGradebook}
           onClose={() => setCurrentScanResult(null)}
         />

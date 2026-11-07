@@ -2,61 +2,39 @@ import { ScanApiResponse } from '../types';
 
 /**
  * Client-Side Emergency Fallback Scanner
- * Activates when the server endpoint (/api/scan-exam) is unreachable,
- * such as on static hosting (e.g. Vercel SPA) or when network drops.
+ * Tuyệt đối KHÔNG tự tạo tên học sinh giả, không tạo SBD ngẫu nhiên.
+ * Trả về các trường trống để giáo viên kiểm tra và tự xác nhận nếu máy chủ AI gặp sự cố.
  */
 export function clientScanExam(
   expectedClass?: string,
   expectedSubject?: string,
   expectedExamCode?: string
 ): ScanApiResponse['data'] {
-  const sampleNames = [
-    'Nguyễn Văn An',
-    'Trần Thị Mai Linh',
-    'Lê Hoàng Nam',
-    'Phạm Đức Minh',
-    'Đỗ Quỳnh Nga',
-    'Vũ Tuấn Kiệt',
-    'Bùi Thảo My',
-    'Hoàng Gia Huy',
-  ];
-  const randName = sampleNames[Math.floor(Math.random() * sampleNames.length)];
-  const randSBD = String(Math.floor(10000 + Math.random() * 90000));
-  const options: ('A' | 'B' | 'C' | 'D')[] = ['A', 'B', 'C', 'D'];
-
-  // Part 1: 40 questions (A, B, C, D)
   const part1: Record<number, any> = {};
   for (let i = 1; i <= 40; i++) {
-    part1[i] = Math.random() > 0.08 ? options[Math.floor(Math.random() * 4)] : null;
+    part1[i] = null;
   }
 
-  // Part 2: 8 questions (a, b, c, d True/False)
   const part2: Record<number, any> = {};
   for (let i = 1; i <= 8; i++) {
-    part2[i] = {
-      a: Math.random() > 0.05 ? Math.random() > 0.45 : null,
-      b: Math.random() > 0.05 ? Math.random() > 0.45 : null,
-      c: Math.random() > 0.05 ? Math.random() > 0.45 : null,
-      d: Math.random() > 0.05 ? Math.random() > 0.45 : null,
-    };
+    part2[i] = { a: null, b: null, c: null, d: null };
   }
 
-  // Part 3: 6 numeric answers
-  const sampleNumbers = ['12', '-3.5', '0.25', '42', '100', '5', '24', '4.5', '18', '250'];
   const part3: Record<number, any> = {};
   for (let i = 1; i <= 6; i++) {
-    part3[i] = Math.random() > 0.1 ? sampleNumbers[Math.floor(Math.random() * sampleNumbers.length)] : null;
+    part3[i] = null;
   }
 
   return {
-    studentName: randName,
-    studentSBD: randSBD,
-    className: expectedClass || '12A1',
-    examCode: expectedExamCode && expectedExamCode !== 'AUTO' ? expectedExamCode : '101',
+    studentName: '', // Để trống cho giáo viên kiểm tra, không bịa tên học sinh
+    studentSBD: '', // Để trống nếu không đọc được, không bịa SBD
+    className: expectedClass || '',
+    subject: expectedSubject || '',
+    examCode: expectedExamCode && expectedExamCode !== 'AUTO' ? expectedExamCode : '',
     part1,
     part2,
     part3,
-    confidence: 0.96,
-    rawOcrNotes: 'Chấm thành công qua bộ phân tích quang học dự phòng trên máy.',
+    confidence: 0.5,
+    rawOcrNotes: 'Không kết nối được dịch vụ nhận dạng AI. Vui lòng kiểm tra lại kết nối mạng.',
   };
 }
