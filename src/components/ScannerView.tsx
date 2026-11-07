@@ -13,7 +13,9 @@ import {
   PlayCircle,
   Flame,
   CheckCircle2,
-  Gauge
+  Gauge,
+  Smartphone,
+  Image as ImageIcon
 } from 'lucide-react';
 import { ScanApiResponse, ExamScanResult } from '../types';
 
@@ -36,8 +38,8 @@ function playBeepSound() {
     const gain = ctx.createGain();
 
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
-    osc.frequency.setValueAtTime(880, ctx.currentTime + 0.08); // A5
+    osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+    osc.frequency.setValueAtTime(880, ctx.currentTime + 0.08);
 
     gain.gain.setValueAtTime(0.12, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.25);
@@ -56,7 +58,7 @@ function playBeepSound() {
 function optimizeImageDataUrl(
   source: HTMLVideoElement | HTMLImageElement,
   maxWidth = 1200,
-  quality = 0.8
+  quality = 0.82
 ): string {
   const canvas = document.createElement('canvas');
   let width = source instanceof HTMLVideoElement ? source.videoWidth : source.naturalWidth;
@@ -67,7 +69,6 @@ function optimizeImageDataUrl(
     height = 720;
   }
 
-  // Downscale proportionally to reduce network payload by 85-90%
   if (width > maxWidth) {
     height = Math.round((height * maxWidth) / width);
     width = maxWidth;
@@ -95,7 +96,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const nativeCameraInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
 
   const [isStreaming, setIsStreaming] = useState(false);
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
@@ -105,7 +107,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
   const [processingStatus, setProcessingStatus] = useState<string>('');
   const [cameraError, setCameraError] = useState<string | null>(null);
 
-  // Rapid continuous batch mode (Tự động lưu, không mở modal từng tờ)
+  // Rapid continuous batch mode
   const [isRapidMode, setIsRapidMode] = useState<boolean>(true);
   const [recentGradedBanner, setRecentGradedBanner] = useState<{
     name: string;
@@ -115,33 +117,71 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
   } | null>(null);
   const [gradedCount, setGradedCount] = useState<number>(0);
 
-  // Start Camera
+  // Progressive Fallback Camera Stream
   const startCamera = async () => {
     setCameraError(null);
+
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setCameraError('Trình duyệt không hỗ trợ truy cập máy ảnh trực tiếp. Vui lòng sử dụng tính năng tải ảnh lên.');
+      setCameraError('Trình duyệt hoặc khung web đang chặn luồng video WebRTC. Hãy bấm nút "Mở Máy Ảnh Điện Thoại" bên dưới để chụp trực tiếp.');
       return;
     }
 
     try {
+      // Stop old tracks if any
       if (videoRef.current && videoRef.current.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
         stream.getTracks().forEach((track) => track.stop());
       }
 
-      const constraints: MediaStreamConstraints = {
-        video: {
-          facingMode: { ideal: facingMode },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-        audio: false,
-      };
+      let stream: MediaStream | null = null;
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+      // Attempt 1: Ideal facingMode and standard resolution
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: facingMode },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+          audio: false,
+        });
+      } catch (e1) {
+        console.warn('Attempt 1 failed, trying fallback 2:', e1);
+      }
+
+      // Attempt 2: Simple facingMode
+      if (!stream) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: facingMode },
+            audio: false,
+          });
+        } catch (e2) {
+          console.warn('Attempt 2 failed, trying fallback 3:', e2);
+        }
+      }
+
+      // Attempt 3: Any video device
+      if (!stream) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
+
+      if (videoRef.current && stream) {
+        const video = videoRef.current;
+        video.srcObject = stream;
+        video.setAttribute('playsinline', 'true');
+        video.setAttribute('webkit-playsinline', 'true');
+        video.muted = true;
+
+        try {
+          await video.play();
+        } catch (playErr) {
+          console.warn('Video play error:', playErr);
+        }
+
         setIsStreaming(true);
 
         const track = stream.getVideoTracks()[0];
@@ -151,7 +191,13 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     } catch (err: any) {
       console.warn('Camera access issue:', err);
       setIsStreaming(false);
-      setCameraError('Chưa cấp quyền máy ảnh hoặc thiết bị đang được ứng dụng khác sử dụng. Bạn có thể chọn ảnh từ thư viện.');
+      let msg = 'Chưa thể mở luồng video trực tiếp trên trình duyệt này.';
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        msg = 'Trình duyệt chưa được cấp quyền máy ảnh. Bạn có thể bấm nút "Mở Máy Ảnh Điện Thoại" bên dưới để chụp mà không cần cấp quyền WebRTC.';
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        msg = 'Máy ảnh đang bị ứng dụng khác sử dụng hoặc bị khóa bởi hệ điều hành.';
+      }
+      setCameraError(msg);
     }
   };
 
@@ -186,25 +232,29 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     setFacingMode((prev) => (prev === 'environment' ? 'user' : 'environment'));
   };
 
-  // Capture Frame with lightweight optimization
-  const captureFrame = async () => {
-    if (!videoRef.current || isProcessing) return;
+  // Shutter action: handles both live stream frame and native camera trigger
+  const handleShutterClick = async () => {
+    if (isProcessing) return;
 
-    try {
-      setIsProcessing(true);
-      setProcessingStatus('Đang tối ưu & nén ảnh...');
-
-      // Fast client-side resize and compression
-      const base64Image = optimizeImageDataUrl(videoRef.current, 1200, 0.82);
-      await processScan(base64Image);
-    } catch (err: any) {
-      console.error(err);
-      onError(err.message || 'Lỗi khi chụp ảnh');
-      setIsProcessing(false);
+    if (isStreaming && videoRef.current) {
+      // Capture frame from active video
+      try {
+        setIsProcessing(true);
+        setProcessingStatus('Đang tối ưu & nén ảnh...');
+        const base64Image = optimizeImageDataUrl(videoRef.current, 1200, 0.82);
+        await processScan(base64Image);
+      } catch (err: any) {
+        console.error(err);
+        onError(err.message || 'Lỗi khi chụp ảnh');
+        setIsProcessing(false);
+      }
+    } else {
+      // If streaming is not active, immediately open phone native camera
+      nativeCameraInputRef.current?.click();
     }
   };
 
-  // Handle Image Upload with automatic downscaling
+  // Handle Image Upload / Camera Capture File
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -228,10 +278,10 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     e.target.value = '';
   };
 
-  // Send to API with minimal latency
+  // Send to API
   const processScan = async (base64Image: string) => {
     try {
-      setProcessingStatus('Máy chủ AI đang phân tích ô tô chì...');
+      setProcessingStatus('Máy chủ AI đang phân tích ô tô chì chuẩn QM 2025...');
       const response = await fetch('/api/scan-exam', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -249,7 +299,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         throw new Error(resData.error || 'Không thể nhận diện phiếu thi.');
       }
 
-      // Check mode: Rapid Continuous Auto-Save vs Detailed Inspection Modal
       if (isRapidMode && onRapidSave) {
         setProcessingStatus('Đang tự động lưu vào bảng điểm...');
         const saved = onRapidSave(resData.data, base64Image);
@@ -317,11 +366,23 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
   };
 
   return (
-    <div className="relative w-full h-[calc(100vh-140px)] min-h-[500px] max-h-[850px] bg-black flex flex-col justify-between overflow-hidden select-none">
+    <div className="relative w-full h-[calc(100vh-140px)] min-h-[520px] max-h-[850px] bg-black flex flex-col justify-between overflow-hidden select-none">
       <canvas ref={canvasRef} className="hidden" />
+
+      {/* 1. Native Camera input (capture="environment") - 100% reliable on all phones */}
       <input
         type="file"
-        ref={fileInputRef}
+        ref={nativeCameraInputRef}
+        accept="image/*"
+        capture="environment"
+        onChange={handleFileUpload}
+        className="hidden"
+      />
+
+      {/* 2. Gallery input */}
+      <input
+        type="file"
+        ref={galleryInputRef}
         accept="image/*"
         onChange={handleFileUpload}
         className="hidden"
@@ -398,7 +459,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         </div>
       )}
 
-      {/* Video Element */}
+      {/* Video Viewport */}
       <div className="relative flex-1 w-full h-full overflow-hidden flex items-center justify-center bg-slate-950">
         {isStreaming ? (
           <video
@@ -408,65 +469,92 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
             className="w-full h-full object-cover"
           />
         ) : (
-          <div className="flex flex-col items-center justify-center p-6 text-center text-slate-400">
-            <Camera className="w-16 h-16 text-slate-600 mb-3" />
-            <p className="text-sm font-medium text-slate-300">
-              {cameraError || 'Đang mở máy ảnh...'}
+          <div className="flex flex-col items-center justify-center p-6 text-center text-slate-300 max-w-md mx-auto z-10">
+            <div className="w-16 h-16 rounded-2xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-blue-400 mb-3 shadow-lg shadow-blue-500/10">
+              <Camera className="w-8 h-8" />
+            </div>
+
+            <h3 className="text-base font-bold text-white">
+              Sẵn sàng chấm bài thi
+            </h3>
+
+            <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+              {cameraError || 'Bạn có thể chụp trực tiếp bằng máy ảnh điện thoại hoặc bật xem máy ảnh trực tiếp.'}
             </p>
-            <p className="text-xs text-slate-500 mt-1 max-w-xs">
-              Bạn có thể tải ảnh chụp phiếu thi từ thư viện hoặc bấm chấm thử bài mẫu.
-            </p>
-            <div className="mt-4 flex flex-wrap gap-2 justify-center">
+
+            {/* Direct action buttons: High-visibility Native Phone Camera */}
+            <div className="mt-5 w-full flex flex-col gap-2.5">
               <button
-                onClick={() => startCamera()}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5"
+                onClick={() => nativeCameraInputRef.current?.click()}
+                className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-400 text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-xl shadow-blue-600/30 active:scale-98 transition-all"
               >
-                <RotateCcw className="w-3.5 h-3.5" /> Thử lại máy ảnh
+                <Smartphone className="w-5 h-5 text-white" />
+                <span>Mở Máy Ảnh Điện Thoại Chụp Ngay</span>
               </button>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => startCamera()}
+                  className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border border-slate-700 transition-colors"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-blue-400" />
+                  <span>Bật Camera Live</span>
+                </button>
+
+                <button
+                  onClick={() => galleryInputRef.current?.click()}
+                  className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border border-slate-700 transition-colors"
+                >
+                  <ImageIcon className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Chọn ảnh có sẵn</span>
+                </button>
+              </div>
+
               <button
-                onClick={() => fileInputRef.current?.click()}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5"
+                onClick={runDemoScan}
+                className="py-2 px-3 bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-800/60 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
               >
-                <Upload className="w-3.5 h-3.5" /> Chọn ảnh từ máy
+                <PlayCircle className="w-4 h-4 text-emerald-400" />
+                <span>Chấm thử bài mẫu để xem mẫu phiếu</span>
               </button>
             </div>
           </div>
         )}
 
         {/* Viewfinder Alignment Overlay matching QM 2025 - CV 1239 */}
-        <div className="absolute inset-4 sm:inset-8 border border-white/30 rounded-2xl pointer-events-none flex flex-col justify-between p-4 shadow-[0_0_0_9999px_rgba(0,0,0,0.55)]">
-          {/* 4 Corner Markers */}
-          <div className="flex justify-between items-start">
-            <div className="w-8 h-8 border-t-4 border-l-4 border-blue-400 rounded-tl-lg shadow-sm" />
-            <div className="flex items-center gap-1.5 px-3 py-1 bg-black/60 backdrop-blur-md rounded-full border border-white/20 text-[11px] text-white font-medium">
-              <Gauge className="w-3.5 h-3.5 text-amber-400" />
-              <span>{isRapidMode ? 'Chế độ Chấm Siêu Tốc (1-2s/bài)' : 'Khung căn chỉnh phiếu QM 2025'}</span>
+        {isStreaming && (
+          <div className="absolute inset-4 sm:inset-8 border border-white/30 rounded-2xl pointer-events-none flex flex-col justify-between p-4 shadow-[0_0_0_9999px_rgba(0,0,0,0.55)]">
+            <div className="flex justify-between items-start">
+              <div className="w-8 h-8 border-t-4 border-l-4 border-blue-400 rounded-tl-lg shadow-sm" />
+              <div className="flex items-center gap-1.5 px-3 py-1 bg-black/60 backdrop-blur-md rounded-full border border-white/20 text-[11px] text-white font-medium">
+                <Gauge className="w-3.5 h-3.5 text-amber-400" />
+                <span>{isRapidMode ? 'Chế độ Chấm Siêu Tốc (1-2s/bài)' : 'Khung căn chỉnh phiếu QM 2025'}</span>
+              </div>
+              <div className="w-8 h-8 border-t-4 border-r-4 border-blue-400 rounded-tr-lg shadow-sm" />
             </div>
-            <div className="w-8 h-8 border-t-4 border-r-4 border-blue-400 rounded-tr-lg shadow-sm" />
-          </div>
 
-          {/* Section Guide Lines */}
-          <div className="w-full flex flex-col gap-2 opacity-40">
-            <div className="w-full border-b border-dashed border-white/60 flex justify-between text-[10px] text-white/80 pb-0.5">
-              <span>Mục 1-8: Thông tin thí sinh & Mã đề</span>
-              <span>Đường rọc phách ✂</span>
+            <div className="w-full flex flex-col gap-2 opacity-40">
+              <div className="w-full border-b border-dashed border-white/60 flex justify-between text-[10px] text-white/80 pb-0.5">
+                <span>Mục 1-8: Thông tin thí sinh & Mã đề</span>
+                <span>Đường rọc phách ✂</span>
+              </div>
+              <div className="w-full h-24 border border-dashed border-blue-400/50 rounded flex items-center justify-center text-[10px] text-blue-200">
+                PHẦN I: 40 câu trắc nghiệm (A, B, C, D)
+              </div>
+              <div className="w-full h-16 border border-dashed border-emerald-400/50 rounded flex items-center justify-center text-[10px] text-emerald-200">
+                PHẦN II: 8 câu Đúng/Sai & PHẦN III: 6 câu số
+              </div>
             </div>
-            <div className="w-full h-24 border border-dashed border-blue-400/50 rounded flex items-center justify-center text-[10px] text-blue-200">
-              PHẦN I: 40 câu trắc nghiệm (A, B, C, D)
-            </div>
-            <div className="w-full h-16 border border-dashed border-emerald-400/50 rounded flex items-center justify-center text-[10px] text-emerald-200">
-              PHẦN II: 8 câu Đúng/Sai & PHẦN III: 6 câu số
-            </div>
-          </div>
 
-          <div className="flex justify-between items-end">
-            <div className="w-8 h-8 border-b-4 border-l-4 border-blue-400 rounded-bl-lg shadow-sm" />
-            <div className="text-[11px] text-white/90 text-center font-medium bg-black/60 px-3 py-1 rounded-full backdrop-blur-sm">
-              {gradedCount > 0 ? `Đã chấm ${gradedCount} bài • Tiếp tục lật bài mới` : 'Căn thẳng giấy và đủ ánh sáng'}
+            <div className="flex justify-between items-end">
+              <div className="w-8 h-8 border-b-4 border-l-4 border-blue-400 rounded-bl-lg shadow-sm" />
+              <div className="text-[11px] text-white/90 text-center font-medium bg-black/60 px-3 py-1 rounded-full backdrop-blur-sm">
+                {gradedCount > 0 ? `Đã chấm ${gradedCount} bài • Tiếp tục lật bài mới` : 'Căn thẳng giấy và đủ ánh sáng'}
+              </div>
+              <div className="w-8 h-8 border-b-4 border-r-4 border-blue-400 rounded-br-lg shadow-sm" />
             </div>
-            <div className="w-8 h-8 border-b-4 border-r-4 border-blue-400 rounded-br-lg shadow-sm" />
           </div>
-        </div>
+        )}
 
         {/* Processing Spinner Overlay */}
         {isProcessing && (
@@ -486,8 +574,8 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
       </div>
 
       {/* Floating Bottom Control Bar */}
-      <div className="relative z-30 bg-slate-900/90 backdrop-blur-md border-t border-slate-800 px-4 py-3 flex items-center justify-between gap-3">
-        {/* Flashlight button */}
+      <div className="relative z-30 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 px-4 py-3 flex items-center justify-between gap-3">
+        {/* Flashlight & Gallery buttons */}
         <div className="flex items-center gap-2">
           {hasTorch && (
             <button
@@ -504,26 +592,26 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
           )}
 
           <button
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => galleryInputRef.current?.click()}
             className="p-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-full transition-colors flex items-center justify-center"
-            title="Tải ảnh phiếu thi từ điện thoại"
+            title="Chọn ảnh từ thư viện"
           >
             <Upload className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Big Shutter Button */}
+        {/* Big Shutter Button: ALWAYS ACTIVE (works on live stream OR triggers native phone camera!) */}
         <button
-          onClick={captureFrame}
-          disabled={isProcessing || !isStreaming}
+          onClick={handleShutterClick}
+          disabled={isProcessing}
           className={`w-16 h-16 rounded-full border-4 border-white flex items-center justify-center p-1 shadow-2xl transition-all transform active:scale-95 ${
-            isProcessing || !isStreaming
+            isProcessing
               ? 'opacity-40 cursor-not-allowed bg-slate-700'
               : isRapidMode
               ? 'bg-gradient-to-tr from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 shadow-amber-500/40 cursor-pointer'
               : 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/40 cursor-pointer'
           }`}
-          title={isRapidMode ? 'Chụp và Tự Động Lưu Siêu Tốc' : 'Chụp và Xem Kết Quả'}
+          title={isStreaming ? 'Chụp từ màn hình trực tiếp' : 'Mở Máy Ảnh Điện Thoại Chụp'}
         >
           <div className="w-12 h-12 rounded-full bg-white flex items-center justify-center">
             {isRapidMode ? (
@@ -534,15 +622,25 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
           </div>
         </button>
 
-        {/* Right action buttons: Switch Camera & Demo Scan */}
+        {/* Right action buttons: Switch Camera / Native Camera Trigger & Demo Scan */}
         <div className="flex items-center gap-2">
-          <button
-            onClick={switchCamera}
-            className="p-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-full transition-colors"
-            title="Đổi camera trước/sau"
-          >
-            <RotateCcw className="w-5 h-5" />
-          </button>
+          {isStreaming ? (
+            <button
+              onClick={switchCamera}
+              className="p-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-full transition-colors"
+              title="Đổi camera trước/sau"
+            >
+              <RotateCcw className="w-5 h-5" />
+            </button>
+          ) : (
+            <button
+              onClick={() => nativeCameraInputRef.current?.click()}
+              className="p-3 bg-blue-600 hover:bg-blue-500 text-white rounded-full transition-colors shadow-lg shadow-blue-600/30"
+              title="Chụp bằng camera điện thoại"
+            >
+              <Smartphone className="w-5 h-5" />
+            </button>
+          )}
 
           <button
             onClick={runDemoScan}
